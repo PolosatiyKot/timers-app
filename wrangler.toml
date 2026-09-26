@@ -1,0 +1,13 @@
+name = "timers-app"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+
+# Static frontend (public/index.html, app.js, style.css) is served
+# automatically for any request that isn't handled by the worker below.
+[assets]
+directory = "./public"
+
+[[d1_databases]]
+binding = "DB"                # available in the worker as env.DB
+database_name = "timers-db"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
