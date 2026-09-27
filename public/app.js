@@ -85,14 +85,52 @@ function enterApp() {
   $("#whoami").textContent = ROLE_LABELS[currentRole] || currentRole;
   $("#admin-btn").classList.toggle("hidden", currentRole !== "admin");
   loadTimers();
-  pollInterval = setInterval(loadTimers, 5000);
+  pollInterval = setInterval(syncTimers, 5000);
   tickInterval = setInterval(tick, 1000);
 }
 
+// Full destructive reload: only used on initial load and right after an
+// action we initiated locally (create/delete), when a full rebuild is safe.
 async function loadTimers() {
   const data = await api("/api/timers");
   timers = data.timers;
   renderAll();
+}
+
+// Background refresh: merges remote data (so other users' start/pause/stop
+// show up) WITHOUT ever rebuilding the DOM or touching input values, so it
+// never interrupts someone who is currently typing in a field.
+let syncing = false;
+async function syncTimers() {
+  if (syncing) return;
+  syncing = true;
+  try {
+    const data = await api("/api/timers");
+    const newTimers = data.timers;
+
+    const oldIds = timers.map((t) => t.id).sort().join(",");
+    const newIds = newTimers.map((t) => t.id).sort().join(",");
+
+    if (oldIds !== newIds) {
+      // A timer was added/removed elsewhere — safe to fully rebuild.
+      timers = newTimers;
+      renderAll();
+      return;
+    }
+
+    for (const nt of newTimers) {
+      const existing = timers.find((t) => t.id === nt.id);
+      if (existing) Object.assign(existing, nt);
+    }
+
+    for (const t of timers) {
+      const card = document.querySelector(`.timer-card[data-id="${t.id}"]`);
+      if (card) updateCardControlState(card, t);
+    }
+    tick();
+  } finally {
+    syncing = false;
+  }
 }
 
 // ---------- time helpers ----------
@@ -132,6 +170,25 @@ function formatEndTime(date) {
   return date ? formatDateTime(date) : "—";
 }
 
+// Patches only the bits of a card that reflect timer status (icon, disabled
+// duration inputs, end-time text) — never touches text/EVE/duration input
+// values, so it's safe to call from the background sync while someone types.
+function updateCardControlState(card, t) {
+  const pauseBtn = card.querySelector(".pause");
+  if (pauseBtn) pauseBtn.innerHTML = t.status === "paused" ? ICON_PLAY : ICON_PAUSE;
+
+  const countdownEl = card.querySelector(".countdown");
+  if (countdownEl) countdownEl.dataset.status = t.status;
+
+  const disable = t.status !== "stopped";
+  card.querySelectorAll(".duration-grid input").forEach((el) => {
+    if (document.activeElement !== el) el.disabled = disable;
+  });
+
+  const endEl = card.querySelector(".end-time-value");
+  if (endEl) endEl.textContent = formatEndTime(computeEndDate(t));
+}
+
 function formatDateTime(date) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -153,10 +210,6 @@ function splitEveTime(str) {
 
 function pad2(v) {
   return v.length === 1 ? "0" + v : v;
-}
-
-function pad4(v) {
-  return v.length > 0 && v.length < 4 ? v.padStart(4, "0") : v;
 }
 
 function escapeHtml(str) {
@@ -286,10 +339,10 @@ function bindCardEvents(card, t) {
   const eveMi = card.querySelector(".f-eve-mi");
 
   const onEveChange = async () => {
-    if (eveY.value) eveY.value = pad4(eveY.value);
     [eveMo, eveD, eveH, eveMi].forEach((el) => {
       if (el.value) el.value = pad2(el.value);
     });
+    // Year is kept exactly as typed (1–4 digits), never auto-padded.
 
     const filled = [eveY.value, eveMo.value, eveD.value, eveH.value, eveMi.value];
     const eve_time = filled.every((v) => v !== "")
@@ -319,9 +372,14 @@ function bindCardEvents(card, t) {
     try {
       // Save the currently displayed duration first so Start can never race
       // against a still-pending autosave and use a stale (e.g. 0) value.
-      await saveField({ duration_seconds: readDurationSeconds() });
+      const duration_seconds = readDurationSeconds();
+      await saveField({ duration_seconds });
       await api(`/api/timers/${id}/start`, { method: "PUT" });
-      await loadTimers();
+      t.status = "running";
+      t.remaining_seconds = duration_seconds;
+      t.target_time = new Date(Date.now() + duration_seconds * 1000).toISOString();
+      updateCardControlState(card, t);
+      tick();
     } catch (err) {
       alert("Ошибка: " + err.message);
     }
@@ -329,7 +387,16 @@ function bindCardEvents(card, t) {
   card.querySelector(".pause").addEventListener("click", async () => {
     try {
       await api(`/api/timers/${id}/pause`, { method: "PUT" });
-      await loadTimers();
+      if (t.status === "running") {
+        t.remaining_seconds = computeRemaining(t, Date.now());
+        t.status = "paused";
+        t.target_time = null;
+      } else if (t.status === "paused") {
+        t.target_time = new Date(Date.now() + t.remaining_seconds * 1000).toISOString();
+        t.status = "running";
+      }
+      updateCardControlState(card, t);
+      tick();
     } catch (err) {
       alert("Ошибка: " + err.message);
     }
@@ -337,7 +404,11 @@ function bindCardEvents(card, t) {
   card.querySelector(".stop").addEventListener("click", async () => {
     try {
       await api(`/api/timers/${id}/stop`, { method: "PUT" });
-      await loadTimers();
+      t.remaining_seconds = t.duration_seconds;
+      t.status = "stopped";
+      t.target_time = null;
+      updateCardControlState(card, t);
+      tick();
     } catch (err) {
       alert("Ошибка: " + err.message);
     }
@@ -345,7 +416,8 @@ function bindCardEvents(card, t) {
   card.querySelector(".delete").addEventListener("click", async () => {
     try {
       await api(`/api/timers/${id}`, { method: "DELETE" });
-      await loadTimers();
+      timers = timers.filter((x) => x.id !== id);
+      card.remove();
     } catch (err) {
       alert("Ошибка: " + err.message);
     }
@@ -375,11 +447,8 @@ function tick() {
     if (countdownEl) {
       countdownEl.textContent = formatCountdown(remaining);
       countdownEl.classList.toggle("expired", remaining <= 0 && t.status === "running");
-      countdownEl.dataset.status = t.status;
     }
-    const pauseBtn = card.querySelector(".pause");
-    if (pauseBtn) pauseBtn.innerHTML = t.status === "paused" ? ICON_PLAY : ICON_PAUSE;
-
+    updateCardControlState(card, t);
     grid.appendChild(card); // reorder without recreating (preserves focus/values)
   }
 
