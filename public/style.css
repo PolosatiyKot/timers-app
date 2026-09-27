@@ -161,6 +161,20 @@ header {
   gap: 10px;
 }
 
+.eve-label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.eve-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.eve-grid input { margin-top: 0; text-align: center; }
+
 .countdown {
   text-align: center;
   font-size: 1.5rem;
@@ -209,8 +223,12 @@ header {
 .icon-action.start { color: var(--success); border-color: var(--success); }
 .icon-action.pause { color: var(--warning); border-color: var(--warning); }
 .icon-action.stop { color: var(--text-dim); }
-.icon-action.danger { color: var(--danger); border-color: var(--danger); }
-.icon-action.danger:hover { background: rgba(255,107,107,0.12); }
+.icon-action.danger {
+  background: rgba(255, 107, 107, 0.14);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.icon-action.danger:hover { background: rgba(255, 107, 107, 0.26); }
 
 .add-tile {
   border: 1px dashed var(--border);
