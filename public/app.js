@@ -314,6 +314,7 @@ function buildCard(t) {
         <input class="f-description" ${dis} value="${escapeHtml(t.description)}" />
       </label>
       <div class="category-wrap">
+        <div class="category-label">Тип</div>
         <button type="button" class="category-btn" ${dis} title="Категория">${categoryIcon(t.category)}</button>
         <div class="category-popup hidden">${categoryOptions}</div>
       </div>
