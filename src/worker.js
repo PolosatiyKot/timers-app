@@ -132,7 +132,7 @@ async function handleChangePassword(request, env, currentRole) {
 
 async function handleGetTimers(env) {
   const { results } = await env.DB.prepare("SELECT * FROM timers ORDER BY id ASC").all();
-  return jsonRes({ timers: results });
+  return jsonRes({ timers: results, now: new Date().toISOString() });
 }
 
 async function handleCreateTimer(env, role) {
