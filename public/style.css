@@ -143,7 +143,7 @@ header {
 
 .timers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
   align-items: start;
 }
@@ -161,28 +161,61 @@ header {
   gap: 10px;
 }
 
-.eve-label {
-  font-size: 0.78rem;
-  color: var(--text-dim);
+.eve-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 4px;
 }
+.eve-label { font-size: 0.78rem; color: var(--text-dim); }
+.now-btn {
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.now-btn:hover { color: var(--text); background: var(--surface); }
 
 .eve-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1.05fr 1fr 1fr 1fr 1fr;
   gap: 5px;
   margin-bottom: 10px;
 }
-.eve-grid input {
+.eve-field { position: relative; }
+.eve-field input {
+  width: 100%;
   margin-top: 0;
   text-align: center;
-  padding: 8px 4px;
+  padding: 8px 14px 8px 4px;
   font-size: 0.82rem;
 }
+.eve-field .stepper {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 14px;
+  display: flex;
+  flex-direction: column;
+}
+.eve-field .step {
+  flex: 1;
+  padding: 0;
+  min-height: 0;
+  font-size: 6px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  border-radius: 0;
+}
+.eve-field .step:hover { color: var(--text); background: var(--surface-2); }
 
 .countdown {
   text-align: center;
-  font-size: 1.5rem;
+  font-size: 3rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
