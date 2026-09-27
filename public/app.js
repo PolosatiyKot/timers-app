@@ -5,6 +5,18 @@ let timers = [];
 let pollInterval = null;
 let tickInterval = null;
 
+// The device's own clock can be wrong or drift from the real time. All
+// countdown math must agree with the server's clock, not the device's, or
+// the displayed remaining time visibly jumps whenever fresh data arrives.
+// clockOffsetMs = (server time) - (device time); serverNow() corrects for it.
+let clockOffsetMs = 0;
+function serverNow() {
+  return Date.now() + clockOffsetMs;
+}
+function updateClockOffset(serverIsoTime) {
+  clockOffsetMs = new Date(serverIsoTime).getTime() - Date.now();
+}
+
 const ROLE_LABELS = { admin: "Администратор", user: "Пользователь", viewer: "Наблюдатель" };
 
 const ICON_PLAY = '<svg viewBox="0 0 16 16" width="14" height="14"><polygon points="3,2 14,8 3,14" fill="currentColor"/></svg>';
@@ -93,6 +105,7 @@ function enterApp() {
 // action we initiated locally (create/delete), when a full rebuild is safe.
 async function loadTimers() {
   const data = await api("/api/timers");
+  updateClockOffset(data.now);
   timers = data.timers;
   renderAll();
 }
@@ -106,6 +119,7 @@ async function syncTimers() {
   syncing = true;
   try {
     const data = await api("/api/timers");
+    updateClockOffset(data.now);
     const newTimers = data.timers;
 
     const oldIds = timers.map((t) => t.id).sort().join(",");
@@ -174,9 +188,6 @@ function formatEndTime(date) {
 // duration inputs, end-time text) — never touches text/EVE/duration input
 // values, so it's safe to call from the background sync while someone types.
 function updateCardControlState(card, t) {
-  const pauseBtn = card.querySelector(".pause");
-  if (pauseBtn) pauseBtn.innerHTML = t.status === "paused" ? ICON_PLAY : ICON_PAUSE;
-
   const countdownEl = card.querySelector(".countdown");
   if (countdownEl) countdownEl.dataset.status = t.status;
 
@@ -222,7 +233,7 @@ function escapeHtml(str) {
 
 function renderAll() {
   const grid = $("#timers-grid");
-  const now = Date.now();
+  const now = serverNow();
   const sorted = [...timers].sort((a, b) => computeRemaining(a, now) - computeRemaining(b, now));
 
   grid.innerHTML = "";
@@ -252,6 +263,17 @@ function buildAddTile() {
   return tile;
 }
 
+function eveFieldHtml(cls, placeholder, value, maxlength, dis) {
+  return `
+    <div class="eve-field">
+      <input class="${cls}" ${dis} inputmode="numeric" maxlength="${maxlength}" placeholder="${placeholder}" value="${value}" />
+      <div class="stepper">
+        <button type="button" class="step step-up" ${dis} tabindex="-1">▲</button>
+        <button type="button" class="step step-down" ${dis} tabindex="-1">▼</button>
+      </div>
+    </div>`;
+}
+
 function buildCard(t) {
   const readOnly = currentRole === "viewer";
   const dhms = secondsToDHMS(t.duration_seconds);
@@ -276,13 +298,16 @@ function buildCard(t) {
       </label>
     </div>
 
-    <div class="eve-label">EVE time</div>
+    <div class="eve-label-row">
+      <span class="eve-label">EVE time</span>
+      <button type="button" class="now-btn" ${dis} title="Подставить текущее UTC время">Now</button>
+    </div>
     <div class="eve-grid">
-      <input class="f-eve-y" ${dis} inputmode="numeric" maxlength="4" placeholder="YYYY" value="${eve.y}" />
-      <input class="f-eve-mo" ${dis} inputmode="numeric" maxlength="2" placeholder="MM" value="${eve.mo}" />
-      <input class="f-eve-d" ${dis} inputmode="numeric" maxlength="2" placeholder="DD" value="${eve.d}" />
-      <input class="f-eve-h" ${dis} inputmode="numeric" maxlength="2" placeholder="HH" value="${eve.h}" />
-      <input class="f-eve-mi" ${dis} inputmode="numeric" maxlength="2" placeholder="MM" value="${eve.mi}" />
+      ${eveFieldHtml("f-eve-y", "YYYY", eve.y, 4, dis)}
+      ${eveFieldHtml("f-eve-mo", "MM", eve.mo, 2, dis)}
+      ${eveFieldHtml("f-eve-d", "DD", eve.d, 2, dis)}
+      ${eveFieldHtml("f-eve-h", "HH", eve.h, 2, dis)}
+      ${eveFieldHtml("f-eve-mi", "MM", eve.mi, 2, dis)}
     </div>
 
     <div class="countdown" data-status="${t.status}"></div>
@@ -301,7 +326,7 @@ function buildCard(t) {
         ? ""
         : `<div class="card-actions">
         <button class="icon-action start" title="Старт">${ICON_PLAY}</button>
-        <button class="icon-action pause" title="Пауза">${t.status === "paused" ? ICON_PLAY : ICON_PAUSE}</button>
+        <button class="icon-action pause" title="Пауза">${ICON_PAUSE}</button>
         <button class="icon-action stop" title="Стоп (сброс)">${ICON_STOP}</button>
         <button class="icon-action delete danger" title="Удалить">${ICON_DELETE}</button>
       </div>`
@@ -354,6 +379,37 @@ function bindCardEvents(card, t) {
   };
   [eveY, eveMo, eveD, eveH, eveMi].forEach((el) => el.addEventListener("change", onEveChange));
 
+  // Up/down stepper buttons next to each EVE time field (mirrors the
+  // duration fields' native spinner, but keeps our leading-zero formatting).
+  const attachStepper = (input, { min, max, padLen }) => {
+    const field = input.closest(".eve-field");
+    const adjust = (delta) => {
+      let v = parseInt(input.value, 10);
+      v = isNaN(v) ? (delta > 0 ? min : max) : v + delta;
+      if (v > max) v = min;
+      if (v < min) v = max;
+      input.value = padLen ? String(v).padStart(padLen, "0") : String(v);
+      onEveChange();
+    };
+    field.querySelector(".step-up").addEventListener("click", () => adjust(1));
+    field.querySelector(".step-down").addEventListener("click", () => adjust(-1));
+  };
+  attachStepper(eveY, { min: 0, max: 9999, padLen: 0 });
+  attachStepper(eveMo, { min: 1, max: 12, padLen: 2 });
+  attachStepper(eveD, { min: 1, max: 31, padLen: 2 });
+  attachStepper(eveH, { min: 0, max: 23, padLen: 2 });
+  attachStepper(eveMi, { min: 0, max: 59, padLen: 2 });
+
+  card.querySelector(".now-btn").addEventListener("click", () => {
+    const d = new Date(serverNow()); // corrected server time, not the device clock
+    eveY.value = String(d.getUTCFullYear());
+    eveMo.value = String(d.getUTCMonth() + 1).padStart(2, "0");
+    eveD.value = String(d.getUTCDate()).padStart(2, "0");
+    eveH.value = String(d.getUTCHours()).padStart(2, "0");
+    eveMi.value = String(d.getUTCMinutes()).padStart(2, "0");
+    onEveChange();
+  });
+
   const durationInputs = [".f-days", ".f-hours", ".f-mins", ".f-secs"].map((sel) => card.querySelector(sel));
   const readDurationSeconds = () => {
     const [days, hours, mins, secs] = durationInputs.map((el) => Math.max(0, parseInt(el.value, 10) || 0));
@@ -377,7 +433,7 @@ function bindCardEvents(card, t) {
       await api(`/api/timers/${id}/start`, { method: "PUT" });
       t.status = "running";
       t.remaining_seconds = duration_seconds;
-      t.target_time = new Date(Date.now() + duration_seconds * 1000).toISOString();
+      t.target_time = new Date(serverNow() + duration_seconds * 1000).toISOString();
       updateCardControlState(card, t);
       tick();
     } catch (err) {
@@ -388,11 +444,11 @@ function bindCardEvents(card, t) {
     try {
       await api(`/api/timers/${id}/pause`, { method: "PUT" });
       if (t.status === "running") {
-        t.remaining_seconds = computeRemaining(t, Date.now());
+        t.remaining_seconds = computeRemaining(t, serverNow());
         t.status = "paused";
         t.target_time = null;
       } else if (t.status === "paused") {
-        t.target_time = new Date(Date.now() + t.remaining_seconds * 1000).toISOString();
+        t.target_time = new Date(serverNow() + t.remaining_seconds * 1000).toISOString();
         t.status = "running";
       }
       updateCardControlState(card, t);
@@ -427,7 +483,7 @@ function bindCardEvents(card, t) {
 // ---------- tick: live countdown + reordering, no DOM rebuild ----------
 
 function tick() {
-  const now = Date.now();
+  const now = serverNow();
   const grid = $("#timers-grid");
   if (!grid) return;
 
