@@ -104,10 +104,18 @@ function computeRemaining(t, nowMs) {
   return t.status === "stopped" ? t.duration_seconds : t.remaining_seconds;
 }
 
-function computeEndDate(t, nowMs) {
-  if (t.status === "running" && t.target_time) return new Date(t.target_time);
-  const remaining = t.status === "stopped" ? t.duration_seconds : t.remaining_seconds;
-  return new Date(nowMs + remaining * 1000);
+function parseEveTime(str) {
+  if (!str) return null;
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// End time depends only on the EVE start time and the set duration —
+// never on the device/network clock — so it does not tick every second.
+function computeEndDate(t) {
+  const start = parseEveTime(t.eve_time);
+  if (!start) return null;
+  return new Date(start.getTime() + t.duration_seconds * 1000);
 }
 
 function formatCountdown(totalSeconds) {
@@ -118,6 +126,10 @@ function formatCountdown(totalSeconds) {
   const secs = totalSeconds % 60;
   const pad = (n) => String(n).padStart(2, "0");
   return `${days}д ${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+}
+
+function formatEndTime(date) {
+  return date ? formatDateTime(date) : "—";
 }
 
 function formatDateTime(date) {
@@ -131,6 +143,20 @@ function secondsToDHMS(totalSeconds) {
   const mins = Math.floor((totalSeconds % 3600) / 60);
   const secs = totalSeconds % 60;
   return { days, hours, mins, secs };
+}
+
+function splitEveTime(str) {
+  const m = str && str.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return { y: "", mo: "", d: "", h: "", mi: "" };
+  return { y: m[1], mo: m[2], d: m[3], h: m[4], mi: m[5] };
+}
+
+function pad2(v) {
+  return v.length === 1 ? "0" + v : v;
+}
+
+function pad4(v) {
+  return v.length > 0 && v.length < 4 ? v.padStart(4, "0") : v;
 }
 
 function escapeHtml(str) {
@@ -177,6 +203,8 @@ function buildCard(t) {
   const readOnly = currentRole === "viewer";
   const dhms = secondsToDHMS(t.duration_seconds);
   const disabledDuration = t.status !== "stopped" || readOnly;
+  const eve = splitEveTime(t.eve_time);
+  const dis = readOnly ? "disabled" : "";
 
   const card = document.createElement("div");
   card.className = "timer-card";
@@ -184,19 +212,25 @@ function buildCard(t) {
 
   card.innerHTML = `
     <label>Описание
-      <input class="f-description" ${readOnly ? "disabled" : ""} value="${escapeHtml(t.description)}" />
+      <input class="f-description" ${dis} value="${escapeHtml(t.description)}" />
     </label>
     <div class="row">
       <label>Система
-        <input class="f-system" ${readOnly ? "disabled" : ""} value="${escapeHtml(t.system)}" />
+        <input class="f-system" ${dis} value="${escapeHtml(t.system)}" />
       </label>
       <label>Игрок
-        <input class="f-player" ${readOnly ? "disabled" : ""} value="${escapeHtml(t.player)}" />
+        <input class="f-player" ${dis} value="${escapeHtml(t.player)}" />
       </label>
     </div>
-    <label>EVE time
-      <input class="f-eve" ${readOnly ? "disabled" : ""} value="${escapeHtml(t.eve_time)}" placeholder="дата/время начала" />
-    </label>
+
+    <div class="eve-label">EVE time</div>
+    <div class="eve-grid">
+      <input class="f-eve-y" ${dis} inputmode="numeric" maxlength="4" placeholder="YYYY" value="${eve.y}" />
+      <input class="f-eve-mo" ${dis} inputmode="numeric" maxlength="2" placeholder="MM" value="${eve.mo}" />
+      <input class="f-eve-d" ${dis} inputmode="numeric" maxlength="2" placeholder="DD" value="${eve.d}" />
+      <input class="f-eve-h" ${dis} inputmode="numeric" maxlength="2" placeholder="HH" value="${eve.h}" />
+      <input class="f-eve-mi" ${dis} inputmode="numeric" maxlength="2" placeholder="MM" value="${eve.mi}" />
+    </div>
 
     <div class="countdown" data-status="${t.status}"></div>
 
@@ -207,7 +241,7 @@ function buildCard(t) {
       <label>Секунды<input type="number" min="0" max="59" class="f-secs" value="${dhms.secs}" ${disabledDuration ? "disabled" : ""} /></label>
     </div>
 
-    <div class="end-time">Окончание: <span class="end-time-value"></span></div>
+    <div class="end-time">Окончание: <span class="end-time-value">${formatEndTime(computeEndDate(t))}</span></div>
 
     ${
       readOnly
@@ -231,6 +265,10 @@ function buildCard(t) {
 function bindCardEvents(card, t) {
   const id = t.id;
 
+  const refreshEndTime = () => {
+    card.querySelector(".end-time-value").textContent = formatEndTime(computeEndDate(t));
+  };
+
   const saveField = async (fields) => {
     await api(`/api/timers/${id}`, { method: "PUT", body: JSON.stringify(fields) });
     Object.assign(t, fields);
@@ -239,20 +277,49 @@ function bindCardEvents(card, t) {
   card.querySelector(".f-description").addEventListener("change", (e) => saveField({ description: e.target.value }));
   card.querySelector(".f-system").addEventListener("change", (e) => saveField({ system: e.target.value }));
   card.querySelector(".f-player").addEventListener("change", (e) => saveField({ player: e.target.value }));
-  card.querySelector(".f-eve").addEventListener("change", (e) => saveField({ eve_time: e.target.value }));
+
+  // EVE time: 5 separate fields (year/month/day/hour/minute), no seconds.
+  const eveY = card.querySelector(".f-eve-y");
+  const eveMo = card.querySelector(".f-eve-mo");
+  const eveD = card.querySelector(".f-eve-d");
+  const eveH = card.querySelector(".f-eve-h");
+  const eveMi = card.querySelector(".f-eve-mi");
+
+  const onEveChange = async () => {
+    if (eveY.value) eveY.value = pad4(eveY.value);
+    [eveMo, eveD, eveH, eveMi].forEach((el) => {
+      if (el.value) el.value = pad2(el.value);
+    });
+
+    const filled = [eveY.value, eveMo.value, eveD.value, eveH.value, eveMi.value];
+    const eve_time = filled.every((v) => v !== "")
+      ? `${filled[0]}-${filled[1]}-${filled[2]}T${filled[3]}:${filled[4]}`
+      : "";
+
+    await saveField({ eve_time });
+    refreshEndTime();
+  };
+  [eveY, eveMo, eveD, eveH, eveMi].forEach((el) => el.addEventListener("change", onEveChange));
 
   const durationInputs = [".f-days", ".f-hours", ".f-mins", ".f-secs"].map((sel) => card.querySelector(sel));
-  const onDurationChange = async () => {
+  const readDurationSeconds = () => {
     const [days, hours, mins, secs] = durationInputs.map((el) => Math.max(0, parseInt(el.value, 10) || 0));
-    const duration_seconds = days * 86400 + hours * 3600 + mins * 60 + secs;
+    return days * 86400 + hours * 3600 + mins * 60 + secs;
+  };
+  const onDurationChange = async () => {
+    const duration_seconds = readDurationSeconds();
     await saveField({ duration_seconds });
     t.remaining_seconds = duration_seconds;
+    refreshEndTime();
     tick();
   };
   durationInputs.forEach((el) => el.addEventListener("change", onDurationChange));
 
   card.querySelector(".start").addEventListener("click", async () => {
     try {
+      // Save the currently displayed duration first so Start can never race
+      // against a still-pending autosave and use a stale (e.g. 0) value.
+      await saveField({ duration_seconds: readDurationSeconds() });
       await api(`/api/timers/${id}/start`, { method: "PUT" });
       await loadTimers();
     } catch (err) {
@@ -276,7 +343,6 @@ function bindCardEvents(card, t) {
     }
   });
   card.querySelector(".delete").addEventListener("click", async () => {
-    if (!confirm("Удалить этот таймер?")) return;
     try {
       await api(`/api/timers/${id}`, { method: "DELETE" });
       await loadTimers();
@@ -311,9 +377,6 @@ function tick() {
       countdownEl.classList.toggle("expired", remaining <= 0 && t.status === "running");
       countdownEl.dataset.status = t.status;
     }
-    const endEl = card.querySelector(".end-time-value");
-    if (endEl) endEl.textContent = formatDateTime(computeEndDate(t, now));
-
     const pauseBtn = card.querySelector(".pause");
     if (pauseBtn) pauseBtn.innerHTML = t.status === "paused" ? ICON_PLAY : ICON_PAUSE;
 
