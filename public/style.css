@@ -164,6 +164,11 @@ header {
 .desc-field { flex: 1; margin-bottom: 0; }
 
 .category-wrap { position: relative; }
+.category-label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
 .category-btn {
   width: 38px;
   height: 38px;
@@ -182,7 +187,7 @@ header {
 
 .category-popup {
   position: absolute;
-  top: 44px;
+  top: 58px;
   right: 0;
   background: var(--surface-2);
   border: 1px solid var(--border);
